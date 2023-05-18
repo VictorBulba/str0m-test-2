@@ -130,7 +130,7 @@ pub(crate) struct Encoder {
     height: u32,
     stat: BitrateMeasure,
     current: CurrentBitrate,
-    pts: u64,
+    pts: i64,
 }
 
 unsafe impl Send for Encoder {}
@@ -142,6 +142,8 @@ impl Encoder {
         // encoder.set_height(height);
         // encoder.set_format(Pixel::from(AV_PIX_FMT_0BGR32));
         // encoder.set_time_base(1.0 / 60.0);
+
+        let current = CurrentBitrate::new();
 
         let config = vpx_encode::Config {
             width,
@@ -196,7 +198,7 @@ impl Encoder {
         argb_to_i420(
             self.width as usize,
             self.height as usize,
-            bgra_pixels,
+            data,
             &mut yuv,
         );
         let packets = self.encoder.encode(pts, &yuv).unwrap();
@@ -208,12 +210,12 @@ impl Encoder {
             packet.extend_from_slice(p.data);
         }
 
-        self.stat.push(data.len() as u32);
+        self.stat.push(packet.len() as u32);
 
         let current_bitrate = self.stat.bitrate();
 
         EncodedFrame {
-            data: data.entirety().to_vec(),
+            data: packet,
             duration,
             current_bitrate,
             time,

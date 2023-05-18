@@ -18,7 +18,7 @@ pub(crate) fn make_rtc(offer: SdpOffer, socket: &Socket) -> (Rtc, SdpAnswer) {
     let rtc_config = Rtc::builder()
         .set_ice_lite(true)
         .clear_codecs()
-        .enable_h264(true);
+        .enable_vp8(true);
     // .enable_bwe(Some(Bitrate::mbps(100)));
 
     let mut rtc = rtc_config.build();
