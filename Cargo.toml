@@ -1,0 +1,16 @@
+[package]
+name = "rust33-str0m_debug"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[workspace]
+members = ["server"]
+
+[dependencies]
+server = { path = "server" }
+async-trait = "*"
+tokio = { version = "*", features = ["macros", "rt-multi-thread"] }
+tracing-subscriber = "0.3.17"
+systemstat = "0.2.3"

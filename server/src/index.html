@@ -1,0 +1,199 @@
+<html lang="en">
+<style>
+    ::-webkit-media-controls {
+        display: none !important;
+    }
+
+    ::-webkit-media-controls-enclosure {
+        display: none !important;
+    }
+
+    body {
+        background-color: black;
+        padding: 0;
+        margin: 0;
+    }
+</style>
+
+<body>
+    <video style="width: 100%; height: 100%;" id="remote-video" controls autoplay muted playsinline></video>
+    <canvas id=c></canvas>
+</body>
+<script>
+    var eventsDc;
+
+    var gamepadState = new Map();
+
+    function axesGuard(value) {
+        let threshold = 0.05;
+        if (value <= threshold && value >= -threshold) {
+            return 0.0;
+        }
+        return value;
+    }
+
+    var timePressed = undefined;
+
+    setInterval(function () {
+        var gamepad = navigator.getGamepads()[0]; // use the first gamepad
+
+        if (gamepad == undefined || gamepad == null) {
+            return;
+        }
+
+        var events = []
+
+        function processButton(index, value) {
+            if (gamepadState.get(index) != value) {
+                if (timePressed == undefined) {
+                    timePressed = performance.now();
+                }
+                gamepadState.set(index, value);
+                events.push({
+                    t: index,
+                    v: value,
+                });
+            }
+        }
+
+        processButton(100, axesGuard(gamepad.axes[0]));
+        processButton(101, axesGuard(-gamepad.axes[1]));
+        processButton(102, axesGuard(gamepad.axes[2]));
+        processButton(103, axesGuard(-gamepad.axes[3]));
+
+        gamepad.buttons
+            .filter((_, i) => i <= 16)
+            .forEach((btn, i) => processButton(i, btn.value));
+
+        if (events.length != 0) {
+            let data = {
+                "time": performance.now(),
+                "events": events,
+            };
+            eventsDc.send(JSON.stringify(data));
+            // console.log(data);
+        }
+    }, 10);
+
+    async function main() {
+        const remoteVideo = document.querySelector('#remote-video');
+
+        let pc = new RTCPeerConnection();
+
+        let dc = pc.createDataChannel("events", {
+            ordered: true,
+            maxRetransmits: 0,
+        });
+
+        dc.onopen = event => {
+            console.log("DATACHANNEL OPENED");
+            eventsDc = dc;
+
+            dc.onmessage = event => {
+                let time = JSON.parse(event.data);
+                // console.log("PING", performance.now() - time);
+            };
+        };
+
+        pc.oniceconnectionstatechange = e => console.log('STATE', pc.iceConnectionState);
+
+        pc.ontrack = track => {
+            console.log("TRACK", track);
+            remoteVideo.srcObject = track.streams[0]
+            console.log("STREAM", remoteVideo.srcObject);
+            remoteVideo.play()
+        };
+
+        let transceiver = pc.addTransceiver('video', { 'direction': 'sendrecv' });
+
+        const offer = await pc.createOffer();
+        pc.setLocalDescription(offer);
+
+        console.log("Offer", offer);
+        let resp = await fetch("/session", {
+            method: 'POST',
+            body: JSON.stringify(offer),
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+
+        console.log(resp);
+
+        let answer = await resp.json();
+        console.log(answer)
+        await pc.setRemoteDescription(answer);
+    }
+
+    function get_canvas_rbg_pixel(cx, x, y, w, h) {
+        var p = cx.getImageData(x, y, w, h).data;
+        return [p[0], p[1], p[2]];
+    }
+
+    var printed = false;
+    var pixelColor = undefined;
+
+    function draw(v, c, w, h) {
+        // if (v.paused || v.ended) return false;
+        c.drawImage(v, 0, 0, w, h);
+        let pixel = get_canvas_rbg_pixel(c, 0, 0, w, h);
+        if (pixelColor == undefined) {
+            pixelColor = pixel;
+        } else {
+            if (pixelColor[0] != pixel[0] || pixelColor[1] != pixel[1] || pixelColor[2] != pixel[2]) {
+                if (!printed) {
+                    console.log("LATENCY", performance.now() - timePressed);
+                    printed = true;
+                }
+            }
+        }
+        // console.log("DRAW", get_canvas_rbg_pixel(c, 0, 0, w, h));
+        setTimeout(draw, 1, v, c, w, h);
+    }
+
+    function main2() {
+        var v = document.getElementById('remote-video');
+        var canvas = document.getElementById('c');
+        var context = canvas.getContext('2d');
+
+        var cw = Math.floor(canvas.clientWidth);
+        var ch = Math.floor(canvas.clientHeight);
+        canvas.width = cw;
+        canvas.height = ch;
+
+        // console.log("CANVAS", canvas.width, canvas.height);
+
+        draw(v, context, cw, ch);
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        main();
+        // console.log("DOM LOADED");
+        setTimeout(() => {
+            main2();
+        }, 2000);
+        // main2();
+    })
+
+    function requsetFullscreen(elem) {
+        if (elem.requestFullscreen) {
+            elem.requestFullscreen().catch(err => {
+                alert(`Error attempting to enable full-screen mode: ${err.message} (${err.name})`);
+            });
+        } else if (elem.msRequestFullscreen) {
+            elem.msRequestFullscreen().catch(err => {
+                alert(`Error attempting to enable ms full-screen mode: ${err.message} (${err.name})`);
+            });
+        } else if (elem.mozRequestFullScreen) {
+            elem.mozRequestFullScreen().catch(err => {
+                alert(`Error attempting to enable moz full-screen mode: ${err.message} (${err.name})`);
+            });
+        } else if (elem.webkitRequestFullscreen) {
+            elem.webkitRequestFullscreen(Element.ALLOW_KEYBOARD_INPUT).catch(err => {
+                alert(`Error attempting to enable webkit full-screen mode: ${err.message} (${err.name})`);
+            });
+        }
+    }
+</script>
+
+</html>
