@@ -125,11 +125,12 @@ impl CurrentBitrate {
 }
 
 pub(crate) struct Encoder {
-    encoder: x264::Encoder,
+    encoder: vpx_encode::Encoder,
     width: u32,
     height: u32,
     stat: BitrateMeasure,
     current: CurrentBitrate,
+    pts: u64,
 }
 
 unsafe impl Send for Encoder {}
@@ -142,13 +143,14 @@ impl Encoder {
         // encoder.set_format(Pixel::from(AV_PIX_FMT_0BGR32));
         // encoder.set_time_base(1.0 / 60.0);
 
-        let current = CurrentBitrate::new();
-
-        let mut encoder = x264::Encoder::builder()
-            .fps(60, 1)
-            .bitrate((current.bitrate.as_u64() / 1024) as i32)
-            .build(x264::Colorspace::BGRA, width as _, height as _)
-            .unwrap();
+        let config = vpx_encode::Config {
+            width,
+            height,
+            timebase: [1, 60],
+            bitrate: 5 * 1024 * 1024,
+            codec: vpx_encode::VideoCodecId::VP8,
+        };
+        let encoder = vpx_encode::Encoder::new(config).unwrap();
 
         // let mut options = ffmpeg_next::util::dictionary::Owned::new();
         // options.set("preset", "p1");
@@ -162,6 +164,7 @@ impl Encoder {
             height,
             stat: BitrateMeasure::new(60 * 2),
             current,
+            pts: 0,
         }
     }
 
@@ -188,10 +191,22 @@ impl Encoder {
         // self.encoder.send_frame(&frame).unwrap();
         // let _ = self.encoder.receive_packet(&mut packet);
 
-        let image = x264::Image::bgra(self.width as i32, self.height as i32, data);
+        let pts = self.pts;
+        let mut yuv = Vec::new();
+        argb_to_i420(
+            self.width as usize,
+            self.height as usize,
+            bgra_pixels,
+            &mut yuv,
+        );
+        let packets = self.encoder.encode(pts, &yuv).unwrap();
+        self.pts += duration.as_millis() as i64;
 
-        let pts = 16;
-        let (data, _) = self.encoder.encode(pts, image).unwrap();
+        let mut packet = Vec::new();
+
+        for p in packets {
+            packet.extend_from_slice(p.data);
+        }
 
         self.stat.push(data.len() as u32);
 
@@ -228,3 +243,54 @@ impl Encoder {
 //         frame
 //     }
 // }
+
+
+
+fn argb_to_i420(width: usize, height: usize, src: &[u8], dest: &mut Vec<u8>) {
+    let stride = src.len() / height;
+
+    dest.clear();
+
+    for y in 0..height {
+        for x in 0..width {
+            let o = y * stride + 4 * x;
+
+            let b = src[o] as i32;
+            let g = src[o + 1] as i32;
+            let r = src[o + 2] as i32;
+
+            let y = (66 * r + 129 * g + 25 * b + 128) / 256 + 16;
+            dest.push(clamp(y));
+        }
+    }
+
+    for y in (0..height).step_by(2) {
+        for x in (0..width).step_by(2) {
+            let o = y * stride + 4 * x;
+
+            let b = src[o] as i32;
+            let g = src[o + 1] as i32;
+            let r = src[o + 2] as i32;
+
+            let u = (-38 * r - 74 * g + 112 * b + 128) / 256 + 128;
+            dest.push(clamp(u));
+        }
+    }
+
+    for y in (0..height).step_by(2) {
+        for x in (0..width).step_by(2) {
+            let o = y * stride + 4 * x;
+
+            let b = src[o] as i32;
+            let g = src[o + 1] as i32;
+            let r = src[o + 2] as i32;
+
+            let v = (112 * r - 94 * g - 18 * b + 128) / 256 + 128;
+            dest.push(clamp(v));
+        }
+    }
+}
+
+fn clamp(x: i32) -> u8 {
+    x.min(255).max(0) as u8
+}
