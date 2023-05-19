@@ -2,7 +2,7 @@ mod socket;
 mod state;
 
 use self::state::{LocalPollingState, Track};
-use crate::encoder::{EncodedFrame, Encoder};
+use crate::encoder::{BitrateMeasure};
 use socket::Socket;
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
@@ -16,8 +16,8 @@ pub(crate) fn make_rtc(offer: SdpOffer, socket: &Socket) -> (Rtc, SdpAnswer) {
     let rtc_config = Rtc::builder()
         // .set_ice_lite(true)
         .clear_codecs()
-        .enable_bwe(Some(Bitrate::mbps(100)))
-        .enable_vp8(true);
+        // .enable_bwe(Some(Bitrate::mbps(100)))
+        .enable_h264(true);
 
     let mut rtc = rtc_config.build();
 
@@ -28,88 +28,89 @@ pub(crate) fn make_rtc(offer: SdpOffer, socket: &Socket) -> (Rtc, SdpAnswer) {
     (rtc, answer)
 }
 
-pub(crate) fn start(
-    offer: SdpOffer,
-    public_ip_addr: IpAddr,
-    width: u32,
-    height: u32,
-) -> std::io::Result<SdpAnswer> {
+pub(crate) fn start(offer: SdpOffer, public_ip_addr: IpAddr) -> std::io::Result<SdpAnswer> {
     let socket = Socket::new(public_ip_addr)?;
 
     let (rtc, answer) = make_rtc(offer, &socket);
 
-    std::thread::spawn(move || run_rtc(rtc, socket, width, height));
+    std::thread::spawn(move || run_rtc(rtc, socket));
 
     Ok(answer)
 }
 
-/// Fancy AI generated function
-fn gen_frame(seed: &mut u32, width: u32, height: u32, frame_number: u32) -> Vec<u8> {
-    let mut pixels = Vec::new();
-
-    let grid_width = width / 15;
-    let grid_height = height / 15;
-
-    // Generate all pixels
-    for pixel_i in 0..(width * height) as usize {
-        // Simple PRNG
-        *seed = seed.wrapping_mul(1103515245).wrapping_add(12345 + frame_number);
-
-        // Calculate the position of the pixel in the image
-        let x = pixel_i as u32 % width;
-        let y = pixel_i as u32 / width;
-
-        // Calculate the position of the grid cell
-        let cell_x = x / grid_width;
-        let cell_y = y / grid_height;
-
-        // Generate a distinct color for each grid cell that changes over time
-        let r = ((cell_x * 50 + frame_number) % 256) as u8;
-        let g = ((cell_y * 50 + frame_number) % 256) as u8;
-        let b = (((*seed % 16) + cell_x + cell_y) % 256) as u8;
-
-        pixels.push([r, g, b]);
-    }
-
-    pixels.into_iter().flat_map(|[r, g, b]| [r, g, b, 255]).collect()
+#[derive(serde::Serialize, serde::Deserialize)]
+struct EncodedFrameDesc {
+    data_offset: usize,
+    data_len: usize,
+    duration: f32,
 }
 
-fn start_frames_generator(width: u32, height: u32) -> tokio::sync::mpsc::Receiver<EncodedFrame> {
+#[derive(Debug)]
+struct EncodedFrame3 {
+    data: Vec<u8>,
+    duration: Duration,
+}
+
+fn load_encoded_frames() -> Vec<EncodedFrame3> {
+    let buf = std::fs::read("./encoded_frames.bin").unwrap();
+    let frames_desc: Vec<EncodedFrameDesc> =
+        serde_json::from_str(&std::fs::read_to_string("./encoded_frames.json").unwrap()).unwrap();
+
+    let mut encoded_frames = Vec::new();
+
+    for fr in frames_desc {
+        encoded_frames.push(EncodedFrame3 {
+            data: buf[fr.data_offset..(fr.data_offset + fr.data_len)].to_vec(),
+            duration: Duration::from_secs_f32(fr.duration),
+        });
+    }
+
+    encoded_frames
+}
+
+#[derive(Debug)]
+struct EncodedFrame4 {
+    data: Vec<u8>,
+    duration: Duration,
+    bitrate: Bitrate,
+}
+
+fn start_frames_generator() -> tokio::sync::mpsc::Receiver<EncodedFrame4> {
     let (tx, rx) = tokio::sync::mpsc::channel(5);
 
-    let mut seed = 2932342342;
+    let encoded_frames = load_encoded_frames();
 
-    let pregenerated_frames: Vec<Vec<u8>> = (0..1200)
-        .map(|i| gen_frame(&mut seed, width, height, i))
-        .collect();
+    let mut bitrate_measure = BitrateMeasure::new(60);
 
     std::thread::spawn(move || {
-        let mut encoder = Encoder::new(width, height);
-        let frame_dur = Duration::from_secs_f32(1.0 / 60.0);
+        for fr in encoded_frames {
+            let sleep_dur = fr.duration;
 
-        for i in 0.. {
             let s = Instant::now();
-            // let data: Vec<u8> = (0..pixels_count).flat_map(|_| [v, v, v, 255]).collect();
-            // let data = gen_gradient_frame(&mut seed, width, height);
-            let data = &pregenerated_frames[i % pregenerated_frames.len()];
-            // println!("Encdoing");
-            let encoded = encoder.encode(&data, frame_dur, Bitrate::ZERO, Instant::now());
-            println!("Done Encdoing in {:?}", s.elapsed());
 
-            tx.blocking_send(encoded).unwrap();
+            bitrate_measure.push(fr.data.len() as u32);
 
-            let frame_creating_time = s.elapsed();
+            tx.blocking_send(EncodedFrame4 {
+                data: fr.data,
+                duration: fr.duration,
+                bitrate: bitrate_measure.bitrate(),
+            }).unwrap();
 
-            std::thread::sleep(frame_dur.saturating_sub(frame_creating_time));
+            let blocking_send_time = s.elapsed();
+
+            std::thread::sleep(sleep_dur.saturating_sub(blocking_send_time));
         }
+
+        println!("No more frames");
+        std::process::exit(0);
     });
     rx
 }
 
-fn run_rtc(mut rtc: Rtc, socket: Socket, width: u32, height: u32) {
+fn run_rtc(mut rtc: Rtc, socket: Socket) {
     let mut local_state = LocalPollingState::new();
 
-    let mut frames_rx = start_frames_generator(width, height);
+    let mut frames_rx = start_frames_generator();
 
     let mut buf = vec![0u8; 2000];
 
@@ -167,26 +168,21 @@ fn run_rtc(mut rtc: Rtc, socket: Socket, width: u32, height: u32) {
             if let Some(track) = local_state.track.as_mut() {
                 if let Ok(encoded_frame) = frames_rx.try_recv() {
                     println!(
-                        "poll FRAME {} {:?}",
-                        encoded_frame.data().len() as f32 / 1024.0 / 1024.0,
-                        encoded_frame.time().elapsed()
+                        "poll FRAME {} {}",
+                        encoded_frame.data.len() as f32 / 1024.0 / 1024.0,
+                        encoded_frame.bitrate,
                     );
                     rtc.bwe()
-                        .set_current_bitrate(encoded_frame.current_bitrate());
+                        .set_current_bitrate(encoded_frame.bitrate);
 
-                    let extra_bitrate = (encoded_frame.current_bitrate() * 0.1)
+                    let extra_bitrate = (encoded_frame.bitrate * 0.1)
                         .clamp(Bitrate::kbps(300), Bitrate::mbps(3));
                     let desired_bitrate = Bitrate::from(
-                        encoded_frame.current_bitrate().as_f64() + extra_bitrate.as_f64(),
+                        encoded_frame.bitrate.as_f64() + extra_bitrate.as_f64(),
                     );
                     rtc.bwe().set_desired_bitrate(desired_bitrate);
 
-                    write_frame(
-                        &mut rtc,
-                        track,
-                        encoded_frame.data(),
-                        encoded_frame.duration(),
-                    );
+                    write_frame(&mut rtc, track, &encoded_frame.data, encoded_frame.duration);
 
                     continue;
                 }

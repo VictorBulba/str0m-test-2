@@ -1,21 +1,15 @@
 mod encoder;
 mod webrtc;
 
-use std::net::IpAddr;
 use axum::extract::Json;
 use axum::response::Html;
 use axum::routing::{get, post};
 use axum::Router;
+use std::net::IpAddr;
 use str0m::change::{SdpAnswer, SdpOffer};
 
 async fn new_session(offer: SdpOffer, public_ip: IpAddr) -> SdpAnswer {
-    let answer = webrtc::start(
-        offer,
-        public_ip,
-        600,
-        400,
-    )
-    .unwrap();
+    let answer = webrtc::start(offer, public_ip).unwrap();
 
     answer
 }

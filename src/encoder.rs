@@ -7,20 +7,20 @@ struct BitrateSample {
     time: Instant,
 }
 
-struct BitrateMeasure {
+pub struct BitrateMeasure {
     samples: VecDeque<BitrateSample>,
     samples_count: usize,
 }
 
 impl BitrateMeasure {
-    fn new(samples_count: usize) -> Self {
+    pub fn new(samples_count: usize) -> Self {
         Self {
             samples: VecDeque::with_capacity(samples_count),
             samples_count,
         }
     }
 
-    fn push(&mut self, data_size: u32) {
+    pub fn push(&mut self, data_size: u32) {
         if self.samples.len() == self.samples_count {
             self.samples.pop_front();
         }
@@ -30,7 +30,7 @@ impl BitrateMeasure {
         });
     }
 
-    fn bitrate(&self) -> Bitrate {
+    pub fn bitrate(&self) -> Bitrate {
         let since_earliest = match self.samples.get(0) {
             Some(sample) => sample.time.elapsed().as_secs_f64(),
             None => return Bitrate::ZERO,
