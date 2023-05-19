@@ -28,7 +28,7 @@ impl Socket {
     }
 
     pub(crate) fn read(&self, buf: &mut Vec<u8>, timeout: Duration) -> Option<(usize, SocketAddr)> {
-        self.socket.set_read_timeout(Some(timeout));
+        self.socket.set_read_timeout(Some(timeout)).unwrap();
         match self.socket.recv_from(buf) {
             Ok(read) => Some(read),
             Err(err) => match err.kind() {

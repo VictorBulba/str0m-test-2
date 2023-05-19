@@ -1,4 +1,4 @@
-mod encoder;
+mod bitrate_measure;
 mod webrtc;
 
 use axum::extract::Json;
@@ -6,20 +6,14 @@ use axum::response::Html;
 use axum::routing::{get, post};
 use axum::Router;
 use std::net::IpAddr;
-use str0m::change::{SdpAnswer, SdpOffer};
-
-async fn new_session(offer: SdpOffer, public_ip: IpAddr) -> SdpAnswer {
-    let answer = webrtc::start(offer, public_ip).unwrap();
-
-    answer
-}
+use str0m::change::SdpOffer;
 
 pub async fn run_server(public_ip: IpAddr) {
     let app = Router::new()
         .route(
             "/session",
             post(move |Json(offer): Json<SdpOffer>| async move {
-                let answer = new_session(offer, public_ip).await;
+                let answer = webrtc::start(offer, public_ip).unwrap();
                 Json(answer)
             }),
         )

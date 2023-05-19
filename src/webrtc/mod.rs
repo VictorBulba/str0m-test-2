@@ -2,7 +2,7 @@ mod socket;
 mod state;
 
 use self::state::{LocalPollingState, Track};
-use crate::encoder::{BitrateMeasure};
+use crate::bitrate_measure::{BitrateMeasure};
 use socket::Socket;
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
@@ -14,7 +14,6 @@ use str0m::{Candidate, Event, Input, Output, Rtc};
 
 pub(crate) fn make_rtc(offer: SdpOffer, socket: &Socket) -> (Rtc, SdpAnswer) {
     let rtc_config = Rtc::builder()
-        // .set_ice_lite(true)
         .clear_codecs()
         // .enable_bwe(Some(Bitrate::mbps(100)))
         .enable_h264(true);
@@ -46,12 +45,12 @@ struct EncodedFrameDesc {
 }
 
 #[derive(Debug)]
-struct EncodedFrame3 {
+struct LoadedEncodedFrame {
     data: Vec<u8>,
     duration: Duration,
 }
 
-fn load_encoded_frames() -> Vec<EncodedFrame3> {
+fn load_encoded_frames() -> Vec<LoadedEncodedFrame> {
     let buf = std::fs::read("./encoded_frames.bin").unwrap();
     let frames_desc: Vec<EncodedFrameDesc> =
         serde_json::from_str(&std::fs::read_to_string("./encoded_frames.json").unwrap()).unwrap();
@@ -59,7 +58,7 @@ fn load_encoded_frames() -> Vec<EncodedFrame3> {
     let mut encoded_frames = Vec::new();
 
     for fr in frames_desc {
-        encoded_frames.push(EncodedFrame3 {
+        encoded_frames.push(LoadedEncodedFrame {
             data: buf[fr.data_offset..(fr.data_offset + fr.data_len)].to_vec(),
             duration: Duration::from_secs_f32(fr.duration),
         });
@@ -115,15 +114,10 @@ fn run_rtc(mut rtc: Rtc, socket: Socket) {
     let mut buf = vec![0u8; 2000];
 
     loop {
-        rtc.bwe().set_current_bitrate(Bitrate::mbps(10));
-        rtc.bwe().set_desired_bitrate(Bitrate::mbps(10));
-        // println!("poll");
-        // let s = Instant::now();
         let timeout = match rtc.poll_output().unwrap() {
             Output::Timeout(v) => v,
 
             Output::Transmit(transmit) => {
-                // println!("transmit");
                 socket.write(transmit);
                 continue;
             }
@@ -153,8 +147,6 @@ fn run_rtc(mut rtc: Rtc, socket: Socket) {
                 continue;
             }
         };
-
-        // println!("poll0 {:?}", s.elapsed());
 
         let timeout = match timeout.checked_duration_since(Instant::now()) {
             Some(t) => t,
