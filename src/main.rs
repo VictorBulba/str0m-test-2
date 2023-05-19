@@ -12,8 +12,8 @@ async fn new_session(offer: SdpOffer, public_ip: IpAddr) -> SdpAnswer {
     let answer = webrtc::start(
         offer,
         public_ip,
-        200,
-        100,
+        600,
+        400,
     )
     .unwrap();
 

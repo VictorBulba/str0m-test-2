@@ -149,7 +149,7 @@ impl Encoder {
             width,
             height,
             timebase: [1, 60],
-            bitrate: 5 * 1024 * 1024,
+            bitrate: 10 * 1024 * 1024,
             codec: vpx_encode::VideoCodecId::VP8,
         };
         let encoder = vpx_encode::Encoder::new(config).unwrap();
