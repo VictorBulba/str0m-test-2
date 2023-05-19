@@ -14,3 +14,4 @@ async-trait = "*"
 tokio = { version = "*", features = ["macros", "rt-multi-thread"] }
 tracing-subscriber = "0.3.17"
 systemstat = "0.2.3"
+console-subscriber = "0.1.9"

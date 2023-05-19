@@ -28,27 +28,26 @@ impl<T: Game> Server<T> {
     pub async fn run(self) {
         let arc_self = Arc::new(self);
 
-        let (offer_s, offer_r) = flume::bounded(1);
+        // let (offer_s, offer_r) = flume::bounded(1);
 
-        // (for str0m team: i use tokio-uring personally, but removed it for demo purpose)
-        // Unfortunatly, no web servers are compatible with tokio-uring yet,
-        // so we have to communicate with it using channels
-        tokio::spawn(async move {
-            loop {
-                let (offer, answer_s): (SdpOffer, oneshot::Sender<SdpAnswer>) =
-                    offer_r.recv_async().await.unwrap();
-                let answer = arc_self.new_session(offer).await;
-                let _ = answer_s.send(answer);
-            }
-        });
+        // // (for str0m team: i use tokio-uring personally, but removed it for demo purpose)
+        // // Unfortunatly, no web servers are compatible with tokio-uring yet,
+        // // so we have to communicate with it using channels
+        // tokio::spawn(async move {
+        //     loop {
+        //         println!("recv session request");
+        //         let (offer, answer_s): (SdpOffer, oneshot::Sender<SdpAnswer>) =
+        //             offer_r.recv_async().await.unwrap();
+        //         let answer = arc_self.new_session(offer).await;
+        //         let _ = answer_s.send(answer);
+        //     }
+        // });
 
         let app = Router::new()
             .route(
                 "/session",
                 post(move |Json(offer): Json<SdpOffer>| async move {
-                    let (answer_s, answer_r) = oneshot::channel();
-                    offer_s.send_async((offer, answer_s)).await.unwrap();
-                    let answer = answer_r.await.unwrap();
+                    let answer = arc_self.new_session(offer).await;
                     Json(answer)
                 }),
             )
@@ -75,31 +74,34 @@ impl<T: Game> Server<T> {
                 .parse()
                 .unwrap(),
             game_session.clone(),
+            1920,
+            1080,
         )
         .unwrap();
 
-        tokio::spawn(game_loop::<T>(
-            webrtc_session,
-            game_session,
-        ));
+        tokio::spawn(game_loop::<T>(webrtc_session, game_session));
 
         answer
     }
 }
 
-async fn game_loop<T: Game>(
-    webrtc_session: WebrtcSession,
-    game_session: Arc<T::Session>,
-) {
-    webrtc_session.state().wait_start().await;
+async fn game_loop<T: Game>(webrtc_session: WebrtcSession, game_session: Arc<T::Session>) {
+    println!("Waiting start");
 
-    let frames_encoder =
-        FramesEncoder::<T>::start(game_session.clone(), webrtc_session);
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    // webrtc_session.state().wait_start().await;
+
+    println!("Done waiting start");
+
+    let frames_encoder = FramesEncoder::<T>::start(game_session.clone(), webrtc_session);
 
     loop {
         let s = Instant::now();
 
+        println!("Frame render");
         let frame = game_session.render_frame().await;
+        println!("Frame render dine");
 
         let wanted_frame_dur = Duration::from_secs_f32(1.0 / 60.0);
 
@@ -136,10 +138,7 @@ struct FramesEncoder<T: Game> {
 }
 
 impl<T: Game> FramesEncoder<T> {
-    fn start(
-        game_session: Arc<T::Session>,
-        webrtc_session: WebrtcSession,
-    ) -> Self {
+    fn start(game_session: Arc<T::Session>, webrtc_session: WebrtcSession) -> Self {
         let (frames_tx, frames_rx) = flume::unbounded::<FrameWithDuration<T>>();
 
         let frames_encoder = Self { frames_tx };
@@ -166,7 +165,8 @@ impl<T: Game> FramesEncoder<T> {
                 let bwe = webrtc_session.state().estimated_bitrate();
 
                 let encoding_s = Instant::now();
-                let encoded_frame = enc.encode(frame.frame.data(), frame.duration, bwe, frame.frame.time());
+                let encoded_frame =
+                    enc.encode(frame.frame.data(), frame.duration, bwe, frame.frame.time());
                 tracing::trace!("Frame encoded in {:?}", encoding_s.elapsed());
 
                 game_session.send_debug_info(DebugInfo {

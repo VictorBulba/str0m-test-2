@@ -160,6 +160,9 @@ impl Encoder {
         // options.set("zerolatency", "1");
         // options.set("tune", "ull");
         // let encoder = encoder.open_as_with("h264_nvenc", options).unwrap();
+
+        println!("Encoding frame");
+
         Self {
             encoder,
             width,

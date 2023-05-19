@@ -2,7 +2,7 @@ mod socket;
 mod state;
 
 use self::state::{LocalPollingState, Track, WebrtcSessionState};
-use crate::encoder::EncodedFrame;
+use crate::encoder::{EncodedFrame, Encoder};
 use crate::GameSession;
 use socket::Socket;
 use std::net::IpAddr;
@@ -16,10 +16,10 @@ use str0m::{Candidate, Event, Input, Output, Rtc};
 
 pub(crate) fn make_rtc(offer: SdpOffer, socket: &Socket) -> (Rtc, SdpAnswer) {
     let rtc_config = Rtc::builder()
-        .set_ice_lite(true)
+        // .set_ice_lite(true)
         .clear_codecs()
-        .enable_vp8(true);
-    // .enable_bwe(Some(Bitrate::mbps(100)));
+        .enable_vp8(true)
+        .enable_bwe(Some(Bitrate::mbps(100)));
 
     let mut rtc = rtc_config.build();
 
@@ -43,6 +43,8 @@ impl WebrtcSession {
         offer: SdpOffer,
         public_ip_addr: IpAddr,
         game_session: Arc<T>,
+        width: u32,
+        height: u32,
     ) -> std::io::Result<(Self, SdpAnswer)> {
         let socket = Socket::new(public_ip_addr)?;
 
@@ -56,7 +58,8 @@ impl WebrtcSession {
             rtc,
             socket,
             inner.clone(),
-            frames_rx,
+            width,
+            height,
             game_session,
         ));
 
@@ -77,22 +80,42 @@ impl WebrtcSession {
     }
 }
 
+fn start_frames_generator(width: u32, height: u32) -> flume::Receiver<EncodedFrame> {
+    let (tx, rx) = flume::unbounded();
+    tokio::spawn(async move {
+        let mut encoder = Encoder::new(width, height);
+        let frame_dur = Duration::from_secs_f32(1.0 / 60.0);
+        loop {
+            let pixels_count = width * height;
+            let data: Vec<u8> = (0..pixels_count)
+                .flat_map(|_| [255u8, 255, 0, 255])
+                .collect();
+            let encoded = encoder.encode(&data, frame_dur, Bitrate::ZERO, Instant::now());
+            tx.send_async(encoded).await.unwrap();
+            tokio::time::sleep(frame_dur).await;
+        }
+    });
+    rx
+}
+
 async fn run_rtc<T: GameSession>(
     mut rtc: Rtc,
     socket: Socket,
     shared_state: Arc<WebrtcSessionState>,
-    frames_rx: flume::Receiver<EncodedFrame>,
+    width: u32,
+    height: u32,
     game_session: Arc<T>,
 ) {
     let mut local_state = LocalPollingState::new(shared_state);
+
+    let frames_rx = start_frames_generator(width, height);
 
     loop {
         let timeout = match rtc.poll_output().unwrap() {
             Output::Timeout(v) => v,
 
             Output::Transmit(transmit) => {
-                println!("{:?}", transmit);
-                socket.write(transmit);
+                socket.write(transmit).await;
                 continue;
             }
 
@@ -131,6 +154,11 @@ async fn run_rtc<T: GameSession>(
         };
 
         let frame_recv_fut = async {
+            println!(
+                "ASk frame {} {}",
+                local_state.is_connected(),
+                local_state.track.is_some()
+            );
             if local_state.is_connected() {
                 if let Some(track) = local_state.track.as_mut() {
                     return (frames_rx.recv_async().await, track);
@@ -152,13 +180,13 @@ async fn run_rtc<T: GameSession>(
                         contents: contents.as_slice().try_into().unwrap(),
                     },
                 );
-                println!("{}", socket.public_addr());
                 rtc.handle_input(input).unwrap();
                 continue;
             },
             encoded_frame = frame_recv_fut => {
                 match encoded_frame {
                     (Ok(encoded_frame), track) => {
+                        println!("GOT FRAME");
                         rtc.bwe().set_current_bitrate(encoded_frame.current_bitrate());
 
                         let extra_bitrate = (encoded_frame.current_bitrate() * 0.1).clamp(Bitrate::kbps(300), Bitrate::mbps(3));
@@ -168,6 +196,7 @@ async fn run_rtc<T: GameSession>(
                         tracing::trace!("Sending frame (delay: {:?}, size: {})", encoded_frame.time().elapsed(), encoded_frame.data().len());
 
                         write_frame(&mut rtc, track, encoded_frame.data(), encoded_frame.duration());
+
                         continue;
                     }
                     (Err(flume::RecvError::Disconnected), _) => {

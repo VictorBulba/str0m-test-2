@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 thiserror = "1"
-vpx-encode = "0.6.2"
+vpx-encode = { version = "0.6.2", features = ["ffi-generate"] }
 
 str0m = { git = "https://github.com/algesten/str0m", rev = "c9384f9d9b8a5622446143cb43361dd07058263a" }
 

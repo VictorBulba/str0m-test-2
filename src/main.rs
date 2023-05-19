@@ -1,6 +1,6 @@
-use std::time::Instant;
 use server::{Frame, Game, GameSession, Server};
 use std::net::IpAddr;
+use std::time::Instant;
 use systemstat::{Platform, System};
 
 pub fn select_host_address() -> IpAddr {
@@ -81,10 +81,17 @@ impl Game for GameImpl {
     }
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread", worker_threads = 10)]
 async fn main() {
-    println!("{}", select_host_address());
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
+    let public_api = select_host_address().to_string();
+
+    println!("Public api: {}", public_api);
+
+    std::env::set_var("PUBLIC_IP", public_api);
 
     Server::new(GameImpl).run().await;
 }
