@@ -1,12 +1,10 @@
 mod socket;
 mod state;
 
-use self::state::{LocalPollingState, Track, WebrtcSessionState};
+use self::state::{LocalPollingState, Track};
 use crate::encoder::{EncodedFrame, Encoder};
-use crate::GameSession;
 use socket::Socket;
 use std::net::IpAddr;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 use str0m::change::{SdpAnswer, SdpOffer};
 use str0m::media::MediaTime;
@@ -24,97 +22,91 @@ pub(crate) fn make_rtc(offer: SdpOffer, socket: &Socket) -> (Rtc, SdpAnswer) {
     let mut rtc = rtc_config.build();
 
     let candidate = Candidate::host(socket.public_addr()).unwrap();
-    println!("{:?}", candidate);
     rtc.add_local_candidate(candidate);
     let answer = rtc.sdp_api().accept_offer(offer).unwrap();
 
     (rtc, answer)
 }
 
-#[derive(Clone)]
-pub(crate) struct WebrtcSession {
-    frames_tx: flume::Sender<EncodedFrame>,
-    state: Arc<WebrtcSessionState>,
+pub(crate) fn start(
+    offer: SdpOffer,
+    public_ip_addr: IpAddr,
+    width: u32,
+    height: u32,
+) -> std::io::Result<SdpAnswer> {
+    let socket = Socket::new(public_ip_addr)?;
+
+    let (rtc, answer) = make_rtc(offer, &socket);
+
+    tokio::spawn(run_rtc(rtc, socket, width, height));
+
+    Ok(answer)
 }
 
-impl WebrtcSession {
-    /// Note: run this on a tokio-uring runtime
-    pub(crate) fn start<T: GameSession>(
-        offer: SdpOffer,
-        public_ip_addr: IpAddr,
-        game_session: Arc<T>,
-        width: u32,
-        height: u32,
-    ) -> std::io::Result<(Self, SdpAnswer)> {
-        let socket = Socket::new(public_ip_addr)?;
-
-        let (rtc, answer) = make_rtc(offer, &socket);
-
-        let inner = Arc::new(WebrtcSessionState::new());
-
-        let (frames_tx, frames_rx) = flume::bounded(1);
-
-        tokio::spawn(run_rtc(
-            rtc,
-            socket,
-            inner.clone(),
-            width,
-            height,
-            game_session,
-        ));
-
-        let session = Self {
-            frames_tx,
-            state: inner,
-        };
-
-        Ok((session, answer))
-    }
-
-    pub(crate) fn state(&self) -> &WebrtcSessionState {
-        &self.state
-    }
-
-    pub(crate) fn send_frame(&self, frame: EncodedFrame) -> Result<(), ()> {
-        self.frames_tx.send(frame).map_err(|_| ())
-    }
+fn xorshift(state: &mut u32) -> [u8; 3] {
+    *state ^= *state << 13;
+    *state ^= *state >> 17;
+    *state ^= *state << 5;
+    [
+        (*state & 0xFF) as u8,
+        ((*state >> 8) & 0xFF) as u8,
+        ((*state >> 16) & 0xFF) as u8,
+    ]
 }
 
-fn start_frames_generator(width: u32, height: u32) -> flume::Receiver<EncodedFrame> {
-    let (tx, rx) = flume::unbounded();
+async fn start_frames_generator(width: u32, height: u32) -> tokio::sync::mpsc::UnboundedReceiver<EncodedFrame> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(async move {
-        let mut encoder = Encoder::new(width, height);
-        let frame_dur = Duration::from_secs_f32(1.0 / 60.0);
-        loop {
-            let pixels_count = width * height;
-            let data: Vec<u8> = (0..pixels_count)
-                .flat_map(|_| [255u8, 255, 0, 255])
+        let pregenerated_frames: Vec<Vec<u8>> = tokio::task::spawn_blocking(move || {
+            let mut seed = 283749023;
+            // println!("PREGENERATING FRAMES");
+            let frames = (0..15)
+                .map(|_| {
+                    let pixels_count = width * height;
+                    let data: Vec<u8> = (0..pixels_count)
+                        .flat_map(|_| {
+                            let [r, g, b] = xorshift(&mut seed);
+                            [r, g, b, 255]
+                        })
+                        .collect();
+                    data
+                })
                 .collect();
-            let encoded = encoder.encode(&data, frame_dur, Bitrate::ZERO, Instant::now());
-            tx.send_async(encoded).await.unwrap();
+            // println!("DONE PREGENERATING FRAMES");
+            frames
+        })
+        .await
+        .unwrap();
+    
+        let mut encoder = Encoder::new(width, height);
+        let frame_dur = Duration::from_millis(20);
+        let mut i = 0;
+        loop {
+            let data = &pregenerated_frames[i % pregenerated_frames.len()];
+            i += 1;
+            // println!("Encdoing");
+            let encoded = encoder.encode(data, frame_dur, Bitrate::ZERO, Instant::now());
+            // println!("Done Encdoing");
+            tx.send(encoded).unwrap();
+            // println!("Sleeping");
             tokio::time::sleep(frame_dur).await;
         }
     });
     rx
 }
 
-async fn run_rtc<T: GameSession>(
-    mut rtc: Rtc,
-    socket: Socket,
-    shared_state: Arc<WebrtcSessionState>,
-    width: u32,
-    height: u32,
-    game_session: Arc<T>,
-) {
-    let mut local_state = LocalPollingState::new(shared_state);
+async fn run_rtc(mut rtc: Rtc, socket: Socket, width: u32, height: u32) {
+    let mut local_state = LocalPollingState::new();
 
-    let frames_rx = start_frames_generator(width, height);
+    let mut frames_rx = start_frames_generator(width, height).await;
 
     loop {
+        // println!("poll");
         let timeout = match rtc.poll_output().unwrap() {
             Output::Timeout(v) => v,
 
             Output::Transmit(transmit) => {
+                // println!("transmit");
                 socket.write(transmit).await;
                 continue;
             }
@@ -154,23 +146,21 @@ async fn run_rtc<T: GameSession>(
         };
 
         let frame_recv_fut = async {
-            println!(
-                "ASk frame {} {}",
-                local_state.is_connected(),
-                local_state.track.is_some()
-            );
             if local_state.is_connected() {
                 if let Some(track) = local_state.track.as_mut() {
-                    return (frames_rx.recv_async().await, track);
+                    println!("poll2");
+                    let v = (frames_rx.recv().await, track);
+                    println!("poll2.3");
+                    return v;
                 }
             }
             std::future::pending().await
         };
 
-        let mut exit = false;
-
+        // println!("poll1");
         tokio::select! {
             s = socket.read() => {
+                // println!("read");
                 let (contents, source) = s;
                 let input = Input::Receive(
                     Instant::now(),
@@ -185,32 +175,27 @@ async fn run_rtc<T: GameSession>(
             },
             encoded_frame = frame_recv_fut => {
                 match encoded_frame {
-                    (Ok(encoded_frame), track) => {
-                        println!("GOT FRAME");
+                    (Some(encoded_frame), track) => {
+                        println!("GOT FRAME {}", encoded_frame.data().len() as f32 / 1024.0 / 1024.0);
                         rtc.bwe().set_current_bitrate(encoded_frame.current_bitrate());
 
                         let extra_bitrate = (encoded_frame.current_bitrate() * 0.1).clamp(Bitrate::kbps(300), Bitrate::mbps(3));
                         let desired_bitrate = Bitrate::from(encoded_frame.current_bitrate().as_f64() + extra_bitrate.as_f64());
                         rtc.bwe().set_desired_bitrate(desired_bitrate);
 
-                        tracing::trace!("Sending frame (delay: {:?}, size: {})", encoded_frame.time().elapsed(), encoded_frame.data().len());
-
                         write_frame(&mut rtc, track, encoded_frame.data(), encoded_frame.duration());
 
                         continue;
                     }
-                    (Err(flume::RecvError::Disconnected), _) => {
-                        tracing::debug!("Shutting down WebRTC polling loop: session aborted");
-                        exit = true; // returns do not work in `select!`
+                    (None, _) => {
+                        panic!("Shutting down WebRTC polling loop");
                     }
                 }
             }
-            _ = tokio::time::sleep(timeout) => {}
+            _ = tokio::time::sleep(timeout) => {
+                // println!("poll sleep");
+            }
         };
-
-        if exit {
-            return;
-        }
 
         rtc.handle_input(Input::Timeout(Instant::now())).unwrap();
     }

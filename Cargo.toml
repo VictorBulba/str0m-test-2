@@ -1,17 +1,19 @@
 [package]
-name = "rust33-str0m_debug"
+name = "str0m-debug2"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[workspace]
-members = ["server"]
-
 [dependencies]
-server = { path = "server" }
-async-trait = "*"
-tokio = { version = "*", features = ["macros", "rt-multi-thread"] }
-tracing-subscriber = "0.3.17"
+thiserror = "1"
+vpx-encode = { version = "0.6.2", features = ["ffi-generate"] }
+str0m = { git = "https://github.com/algesten/str0m", rev = "c9384f9d9b8a5622446143cb43361dd07058263a" }
+tokio = { version = "1", features = ["time", "macros", "rt-multi-thread"] }
+crossbeam = "0.8"
+axum = "0.6"
+serde = { version = "*", features = ["derive"] }
+serde_json = "1"
+tracing = "*"
+tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
 systemstat = "0.2.3"
-console-subscriber = "0.1.9"

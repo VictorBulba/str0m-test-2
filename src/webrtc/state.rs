@@ -1,49 +1,14 @@
-use parking_lot::Mutex;
-use std::sync::Arc;
 use std::time::Duration;
 use str0m::channel::ChannelId;
 use str0m::format::PayloadParams;
 use str0m::media::{MediaAdded, MediaKind, Mid};
 use str0m::{Bitrate, IceConnectionState, Rtc};
-use tokio::sync::Notify;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnectionState {
     New,
     Connected,
     Closed,
-}
-
-struct WebrtcSessionStateMut {
-    media_added: bool,
-    state: ConnectionState,
-    estimated_bitrate: Bitrate,
-}
-
-pub(crate) struct WebrtcSessionState {
-    started_notification: Notify,
-    state_mut: Mutex<WebrtcSessionStateMut>,
-}
-
-impl WebrtcSessionState {
-    pub(crate) fn new() -> Self {
-        Self {
-            started_notification: Notify::new(),
-            state_mut: Mutex::new(WebrtcSessionStateMut {
-                media_added: false,
-                state: ConnectionState::New,
-                estimated_bitrate: Bitrate::ZERO,
-            }),
-        }
-    }
-
-    pub(crate) async fn wait_start(&self) {
-        self.started_notification.notified().await;
-    }
-
-    pub(crate) fn estimated_bitrate(&self) -> Bitrate {
-        self.state_mut.lock().estimated_bitrate
-    }
 }
 
 pub(crate) struct Track {
@@ -53,7 +18,6 @@ pub(crate) struct Track {
 }
 
 pub(crate) struct LocalPollingState {
-    shared: Arc<WebrtcSessionState>,
     pub(crate) track: Option<Track>,
     pub(crate) events_channel: Option<ChannelId>,
     state: ConnectionState,
@@ -61,9 +25,8 @@ pub(crate) struct LocalPollingState {
 }
 
 impl LocalPollingState {
-    pub(crate) fn new(shared: Arc<WebrtcSessionState>) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            shared,
             track: None,
             events_channel: None,
             state: ConnectionState::New,
@@ -90,12 +53,6 @@ impl LocalPollingState {
             params: params[0].clone(),
             accumulated_time: Duration::ZERO,
         });
-
-        let mut shared_mut = self.shared.state_mut.lock();
-        shared_mut.media_added = true;
-        if shared_mut.state == ConnectionState::Connected {
-            self.shared.started_notification.notify_one();
-        }
     }
 
     pub(crate) fn add_data_channel(&mut self, channel: ChannelId, label: String) {
@@ -115,8 +72,6 @@ impl LocalPollingState {
 
     pub(crate) fn set_estimated_bitrate(&mut self, bitrate: Bitrate) {
         let clamped_bitrate = bitrate.clamp(Bitrate::ZERO, Bitrate::mbps(20));
-
-        self.shared.state_mut.lock().estimated_bitrate = clamped_bitrate;
         self.bwe = clamped_bitrate;
     }
 
@@ -125,16 +80,10 @@ impl LocalPollingState {
             IceConnectionState::Disconnected => {
                 tracing::debug!("ICE disconnected, closing WebRTC session");
                 self.state = ConnectionState::Closed;
-                self.shared.state_mut.lock().state = self.state;
             }
             IceConnectionState::Connected | IceConnectionState::Completed => {
                 tracing::debug!("ICE connected");
-                let mut shared_mut = self.shared.state_mut.lock();
                 self.state = ConnectionState::Connected;
-                shared_mut.state = self.state;
-                if shared_mut.media_added {
-                    self.shared.started_notification.notify_one();
-                }
             }
             _ => {}
         }

@@ -1,6 +1,5 @@
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
-use str0m::net::{DatagramSend, Transmit};
+use str0m::net::Transmit;
 use tokio::net::UdpSocket;
 
 pub(crate) struct Socket {
