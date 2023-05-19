@@ -68,14 +68,14 @@ fn load_encoded_frames() -> Vec<LoadedEncodedFrame> {
 }
 
 #[derive(Debug)]
-struct EncodedFrame4 {
+struct EncodedFrame {
     data: Vec<u8>,
     duration: Duration,
     bitrate: Bitrate,
 }
 
-fn start_frames_generator() -> tokio::sync::mpsc::Receiver<EncodedFrame4> {
-    let (tx, rx) = tokio::sync::mpsc::channel(5);
+fn start_frames_generator() -> flume::Receiver<EncodedFrame> {
+    let (tx, rx) = flume::bounded::<EncodedFrame>(5);
 
     let encoded_frames = load_encoded_frames();
 
@@ -89,7 +89,7 @@ fn start_frames_generator() -> tokio::sync::mpsc::Receiver<EncodedFrame4> {
 
             bitrate_measure.push(fr.data.len() as u32);
 
-            tx.blocking_send(EncodedFrame4 {
+            tx.send(EncodedFrame {
                 data: fr.data,
                 duration: fr.duration,
                 bitrate: bitrate_measure.bitrate(),
@@ -109,7 +109,7 @@ fn start_frames_generator() -> tokio::sync::mpsc::Receiver<EncodedFrame4> {
 fn run_rtc(mut rtc: Rtc, socket: Socket) {
     let mut local_state = LocalPollingState::new();
 
-    let mut frames_rx = start_frames_generator();
+    let frames_rx = start_frames_generator();
 
     let mut buf = vec![0u8; 2000];
 

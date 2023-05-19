@@ -1,31 +1,29 @@
 mod bitrate_measure;
 mod webrtc;
 
-use axum::extract::Json;
-use axum::response::Html;
-use axum::routing::{get, post};
-use axum::Router;
 use std::net::IpAddr;
 use str0m::change::SdpOffer;
 
-pub async fn run_server(public_ip: IpAddr) {
-    let app = Router::new()
-        .route(
-            "/session",
-            post(move |Json(offer): Json<SdpOffer>| async move {
-                let answer = webrtc::start(offer, public_ip).unwrap();
-                Json(answer)
-            }),
-        )
-        .route(
-            "/",
-            get(|| async { Html(include_str!("index.html").to_string()) }),
-        );
+// Handle a web request.
+fn web_request(request: &rouille::Request) -> rouille::Response {
+    if request.method() == "GET" {
+        return rouille::Response::html(include_str!("index.html"));
+    }
 
-    axum::Server::bind(&"0.0.0.0:4500".parse().unwrap())
-        .serve(app.into_make_service())
-        .await
-        .unwrap();
+    // Expected POST SDP Offers.
+    let mut data = request.data().expect("body to be available");
+
+    let offer: SdpOffer = serde_json::from_reader(&mut data).expect("serialized offer");
+
+    let public_ip_addr = select_host_address();
+
+    println!("IP: {}", public_ip_addr);
+
+    let answer = webrtc::start(offer, public_ip_addr).unwrap();
+
+    let body = serde_json::to_vec(&answer).expect("answer to serialize");
+
+    rouille::Response::from_data("application/json", body)
 }
 
 pub fn select_host_address() -> IpAddr {
@@ -46,15 +44,15 @@ pub fn select_host_address() -> IpAddr {
     panic!("Found no usable network interface");
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let ip = select_host_address();
+    let server =
+        rouille::Server::new("0.0.0.0:3000", web_request).expect("starting the web server");
 
-    println!("IP: {}", ip);
+    tracing::info!("Listening on {:?}", server.server_addr().port());
 
-    run_server(ip).await;
+    server.run();
 }
